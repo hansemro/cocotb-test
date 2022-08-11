@@ -774,6 +774,11 @@ class Vcs(Simulator):
 
         cmd = []
 
+        toplevel = []
+        for t in self.toplevel_module_list:
+            toplevel += ["-top", t]
+        verilog_sources = self.verilog_sources_flat.copy()
+
         do_file_path = os.path.join(self.sim_dir, "pli.tab")
         with open(do_file_path, "w") as pli_file:
             pli_file.write(pli_cmd)
@@ -782,7 +787,31 @@ class Vcs(Simulator):
         debug_access = "-debug_access"
         if self.waves:
             debug_access += "+all+dmptf"
-            compile_args += ["-kdb", "-debug_region+cell"]
+            # TODO: handle fsdb, vcd, vpd dumping selection
+
+            # -kdb breaks when Verdi is not available
+            #compile_args += ["-kdb", "-debug_region+cell"]
+            compile_args += ["-debug_region+cell"]
+
+            dump_mod_name = "vcs_dump"
+            vcd_dump_file_name = self.toplevel_module + ".vcd"
+            vpd_dump_file_name = self.toplevel_module + ".vpd"
+            dump_mod_file_name = os.path.join(self.sim_dir, dump_mod_name + ".v")
+
+            if not os.path.exists(dump_mod_file_name):
+                with open(dump_mod_file_name, "w") as f:
+                    f.write("module %s();\n" % dump_mod_name)
+                    f.write("initial begin\n")
+                    f.write('    $dumpfile("%s");\n' % vcd_dump_file_name)
+                    f.write("    $dumpvars(0, %s);\n" % self.toplevel_module)
+                    f.write('    $vcdplusfile("%s");\n' % vpd_dump_file_name)
+                    f.write("    $vcdpluson(0, %s);\n" % self.toplevel_module)
+                    f.write("    $vcdplusmemon();\n")
+                    f.write("end\n")
+                    f.write("endmodule\n")
+
+            verilog_sources += [dump_mod_file_name]
+            toplevel += ["-top", dump_mod_name]
 
         simv_path = os.path.join(self.sim_dir, self.module)
         cmd_build = (
@@ -801,7 +830,8 @@ class Vcs(Simulator):
             + self.get_include_commands(self.includes)
             + self.get_parameter_commands(self.parameters)
             + compile_args
-            + self.verilog_sources_flat
+            + verilog_sources
+            + toplevel
             + ["-o", simv_path]
         )
         cmd.append(cmd_build)
@@ -811,11 +841,19 @@ class Vcs(Simulator):
                 simv_path,
                 "+define+COCOTB_SIM=1",
             ] + self.simulation_args
-            if self.waves:
-                ucli_do = os.path.join(self.sim_dir, f"{self.module}_ucli.do")
-                with open(ucli_do, "w") as f:
-                    f.write(f"fsdbDumpfile {simv_path}.fsdb; fsdbDumpvars 0 {self.toplevel_module}; run; quit;")
-                cmd_run += ["+fsdb+all=on", "-ucli", "-do", ucli_do]
+            # fsdb dumping breaks vcs if Verdi is not installed
+            #INFO     cocotb:simulator.py:291 ucli% fsdbDumpfile /gscratch/ece/usr/hansem7/work/riscv_dsp/tb/uart/sim_build/test_uart.fsdb; fsdbDumpvars 0 uart; run; quit;
+            #INFO     cocotb:simulator.py:291 file /gscratch/ece/usr/hansem7/work/riscv_dsp/tb/uart/sim_build/test_uart_ucli.do, line 1:
+            #    INFO     cocotb:simulator.py:291 Warning-[UCLI-FSDB-LOAD-FAIL] UCLI dump fsdb failed to load novas library
+            #    INFO     cocotb:simulator.py:291   The UCLI dump fsdb command failed to load the novas library because
+            #    INFO     cocotb:simulator.py:291   VERDI_HOME is not set.
+            #    INFO     cocotb:simulator.py:291   Please make sure VERDI_HOME is properly set, and rerun the simulation. For
+            #    INFO     cocotb:simulator.py:291   more details, please refer the FSDB user guide for right usage.
+            #if self.waves:
+            #    ucli_do = os.path.join(self.sim_dir, f"{self.module}_ucli.do")
+            #    with open(ucli_do, "w") as f:
+            #        f.write(f"fsdbDumpfile {simv_path}.fsdb; fsdbDumpvars 0 {self.toplevel_module}; run; quit;")
+            #    cmd_run += ["+fsdb+all=on", "-ucli", "-do", ucli_do]
             cmd.append(cmd_run)
 
         if self.gui:
